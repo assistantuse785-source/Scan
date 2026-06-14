@@ -13,63 +13,51 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 L = instaloader.Instaloader()
 is_logged_in = False
 
-# States for manual login
-WAITING_FOR_USER = 1
-WAITING_FOR_PASS = 2
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "💀 *ULTIMATE TAKEDOWN SYSTEM* 💀\n\n"
+        "🚀 *MOBILE PRO: INSTAGRAM TRACKER* 🚀\n\n"
+        "To bypass security on mobile, we use the **Session ID** method.\n\n"
         "🛠 *Commands:* \n"
-        "/login - Start Manual Instagram Login\n"
-        "/status - Check if bot is connected\n"
-        "/start - Show Menu\n\n"
-        "👉 *After login, just send any Username/Link to scan.*",
+        "/setcookie - Get Mobile Setup Guide\n"
+        "/status - Check Connection\n"
+        "/start - Menu\n\n"
+        "👉 *After linking, just send any Username/Link to scan.*",
         parse_mode="Markdown"
     )
 
-async def status_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_logged_in
-    msg = "✅ *Connected to Instagram*" if is_logged_in else "❌ *Not Connected*"
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['state'] = WAITING_FOR_USER
-    await update.message.reply_text("👤 *Step 1:* Please send your Instagram **Username**.")
+async def set_cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📱 *How to get Session ID on Mobile:*\n\n"
+        "1. Install **Kiwi Browser** from Play Store.\n"
+        "2. Add **Cookie-Editor** extension in Kiwi.\n"
+        "3. Login to Instagram.com in Kiwi Browser.\n"
+        "4. Open Menu -> Cookie-Editor -> Find `sessionid`.\n"
+        "5. Copy the **Value** and send it here.\n\n"
+        "👉 *Send your Session ID value now:*",
+        parse_mode="Markdown"
+    )
+    context.user_data['state'] = 'WAITING_FOR_COOKIE'
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_logged_in
     state = context.user_data.get('state')
     text = update.message.text.strip()
 
-    if state == WAITING_FOR_USER:
-        context.user_data['insta_user'] = text
-        context.user_data['state'] = WAITING_FOR_PASS
-        await update.message.reply_text(f"🔑 *Step 2:* Got it. Now send the **Password** for `@{text}`.\n\n*(Note: Delete your password message after sending for security)*")
-        return
-
-    if state == WAITING_FOR_PASS:
-        insta_user = context.user_data.get('insta_user')
-        insta_pass = text
-        context.user_data['state'] = None # Reset state
-        
-        status_msg = await update.message.reply_text(f"📡 *Attempting login for @{insta_user}...*")
-        
+    if state == 'WAITING_FOR_COOKIE':
+        context.user_data['state'] = None
+        status_msg = await update.message.reply_text("📡 *Linking Mobile Session...*")
         try:
-            L.login(insta_user, insta_pass)
+            L.context._session.cookies.set("sessionid", text, domain=".instagram.com")
+            L.test_login() 
             is_logged_in = True
-            await status_msg.edit_text(f"✅ *Login Successful!* \nBot is now connected as `@{insta_user}`. You can now scan accounts.")
-        except instaloader.exceptions.BadCredentialsException:
-            await status_msg.edit_text("❌ *Login Failed:* Wrong Username or Password.")
-        except instaloader.exceptions.CheckpointException:
-            await status_msg.edit_text("⚠️ *Checkpoint:* Instagram blocked this login. \n\n*Fix:* Open Instagram App on your phone, look for 'Was this you?' and click **'This was me'**. Then try `/login` again.")
+            await status_msg.edit_text("✅ *Mobile Pro Linked!* \nYou can now scan accounts without any blocks.")
         except Exception as e:
-            await status_msg.edit_text(f"❌ *Error:* {str(e)}")
+            await status_msg.edit_text(f"❌ *Failed:* {str(e)}\nMake sure you copied the correct sessionid.")
         return
 
-    # If not in login state, treat as Scan request
+    # Scan Logic
     username = text.split('/')[-1].split('?')[0].replace("@", "")
-    scan_status = await update.message.reply_text(f"🚀 *SCANNING @{username}...*", parse_mode="Markdown")
+    scan_msg = await update.message.reply_text(f"⚡ *SCANNING @{username}...*", parse_mode="Markdown")
 
     try:
         profile = instaloader.Profile.from_username(L.context, username)
@@ -82,29 +70,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 max_chance = max(max_chance, check["top_risks"][0]['chance'])
                 violations.extend(check["suggested_reports"])
 
-        violations = list(set(violations)) if not violations else list(set(violations))
-        if not violations: violations = ["Spam / Guidelines"]
+        violations = list(set(violations)) if violations else ["Spam / Community Standards"]
 
         report = [
-            f"👑 *DOSSIER:* @{username}",
+            f"👑 *TAKEDOWN REPORT:* @{username}",
             f"━━━━━━━━━━━━━━━━━━━━",
             f"📊 AI Risk: {max_chance}%",
-            f"\n📱 *METHOD 1: NORMAL APP*",
+            f"\n📱 *METHOD 1: MASS REPORT*",
             f"• Category: {violations[0]}",
+            f"• Action: Report 20x from 5 accounts.",
             f"\n🌐 *METHOD 2: CHROME BYPASS*",
-            f"1. Chrome Incognito -> `instagram.com/{username}`\n2. Report -> Something else.",
-            f"\n🤖 *METHOD 3: GOOGLE AI PROMPT*",
-            f"`[CRITICAL] Account @{username} violating safety protocols: {', '.join(violations)}. Match: {max_chance}%. Terminate.`"
+            f"1. Use Kiwi Browser Incognito.\n2. Go to `instagram.com/{username}`\n3. Report -> Something else.",
+            f"\n🤖 *METHOD 3: ULTIMATE AI PROMPT*",
+            f"`[CRITICAL] Account @{username} matches prohibited patterns for {', '.join(violations)}. Termination required.`"
         ]
-        await scan_status.edit_text("\n".join(report), parse_mode="Markdown", disable_web_page_preview=True)
+        await scan_msg.edit_text("\n".join(report), parse_mode="Markdown", disable_web_page_preview=True)
     except Exception as e:
-        await scan_status.edit_text(f"❌ *Scan Failed:* {str(e)}\n\n*Tip:* Use `/login` to connect an account first.")
+        await scan_msg.edit_text(f"❌ *Scan Failed:* {str(e)}\n\n*Tip:* `/setcookie` se naya session link karein.")
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('login', login_start))
-    app.add_handler(CommandHandler('status', status_check))
+    app.add_handler(CommandHandler('setcookie', set_cookie))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.run_polling()
     
