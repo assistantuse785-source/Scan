@@ -5,15 +5,14 @@ from dotenv import load_dotenv
 load_dotenv()
 client = OpenAI()
 
-# Instagram reporting categories mapping
 INSTAGRAM_REPORT_MAPPING = {
-    "hate": "Hate Speech or Symbols",
-    "harassment": "Harassment or Bullying",
+    "hate": "Hate Speech",
+    "harassment": "Harassment",
     "self-harm": "Self-Injury",
-    "sexual": "Sexual Content",
-    "violence": "Violence or Threats",
-    "illegal": "Illegal Activities",
-    "spam": "Spam or Scams"
+    "sexual": "Nudity or Sexual Activity",
+    "violence": "Violence or Dangerous Organizations",
+    "illegal": "Sale of Illegal or Regulated Goods",
+    "spam": "Spam"
 }
 
 def check_content_policy(text):
@@ -27,10 +26,9 @@ def check_content_policy(text):
             categories = output.categories.to_dict()
             for cat, flagged in categories.items():
                 if flagged:
-                    results["violations"].append(cat)
-                    # Mapping to Instagram categories
+                    results["violations"].append(cat.replace('/', ' '))
                     for key, val in INSTAGRAM_REPORT_MAPPING.items():
                         if key in cat: results["suggested_reports"].append(val)
     except: pass
     return results
-  
+    
