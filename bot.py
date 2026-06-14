@@ -11,7 +11,7 @@ from moderator import check_content_policy
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-L = instaloader.Instaloader(user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6 Mobile/15E148 Safari/604.1")
+L = instaloader.Instaloader()
 is_logged_in = False
 
 # States
@@ -26,102 +26,87 @@ def extract_username(text):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅ Connected" if is_logged_in else "❌ Not Connected"
-    keyboard = [[InlineKeyboardButton("🔐 Login / Re-connect", callback_data='start_login')]]
     await update.message.reply_text(
-        f"🔥 *ULTIMATE INSTAGRAM TRACKER (OP)* 🔥\n\n"
+        f"🔥 *ULTIMATE INSTAGRAM TRACKER (FINAL)* 🔥\n\n"
         f"📡 *Status:* {status}\n\n"
-        "👉 *Instructions:* \n"
-        "1. Login first to enable scanning.\n"
-        "2. Send any Profile Link or Username.\n"
-        "3. Confirm and generate Takedown Prompts.",
-        reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+        "🛠 *Commands:* \n"
+        "/login - Connect your account\n"
+        "/start - Show Menu\n\n"
+        "👉 *After login, just send any Username/Link to scan.*",
+        parse_mode="Markdown"
     )
+
+async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['state'] = WAITING_USER
+    await update.message.reply_text("👤 *Step 1:* Enter your Instagram **Username**.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_logged_in
     state = context.user_data.get('state')
     text = update.message.text.strip()
 
+    # --- SIMPLE LOGIN LOGIC (BACK TO BASICS) ---
     if state == WAITING_USER:
         context.user_data['insta_user'] = text
         context.user_data['state'] = WAITING_PASS
-        await update.message.reply_text(f"🔑 Enter **Password** for `@{text}`.")
+        await update.message.reply_text(f"🔑 *Step 2:* Enter **Password** for `@{text}`.")
         return
 
     if state == WAITING_PASS:
-        context.user_data['insta_pass'] = text
-        await attempt_login(update, context, context.user_data['insta_user'], text)
+        insta_user = context.user_data['insta_user']
+        status_msg = await update.message.reply_text("📡 *Logging in...*")
+        try:
+            L.login(insta_user, text)
+            is_logged_in = True
+            context.user_data['state'] = None
+            await status_msg.edit_text(f"✅ *Success!* Connected as `@{insta_user}`.")
+        except instaloader.exceptions.TwoFactorAuthRequiredException:
+            context.user_data['state'] = WAITING_CODE
+            await status_msg.edit_text("🔐 *OTP Required:* Enter the 6-digit code sent to your phone.")
+        except instaloader.exceptions.CheckpointException:
+            await status_msg.edit_text("⚠️ *Checkpoint:* Open Instagram App, click 'This was me', then try `/login` again.")
+            context.user_data['state'] = None
+        except Exception as e:
+            await status_msg.edit_text(f"❌ *Failed:* {str(e)}")
+            context.user_data['state'] = None
         return
 
     if state == WAITING_CODE:
-        status_msg = await update.message.reply_text("📡 Verifying OTP...")
+        status_msg = await update.message.reply_text("📡 *Verifying Code...*")
         try:
             L.two_factor_login(text)
             is_logged_in, context.user_data['state'] = True, None
-            await status_msg.edit_text("✅ *OTP Verified!* Bot is now Online.")
+            await status_msg.edit_text("✅ *OTP Verified!* Connection Established.")
         except Exception as e:
-            await status_msg.edit_text(f"❌ *OTP Error:* {str(e)}")
+            await status_msg.edit_text(f"❌ *Error:* {str(e)}")
         return
 
-    # --- STEP 1: BASIC INFO (FAST) ---
+    # --- STEP-BY-STEP SCAN FLOW (OP MODE) ---
     username = extract_username(text)
     if not username: return
-    status_msg = await update.message.reply_text(f"🔍 Fetching @{username}...")
+    
+    status_msg = await update.message.reply_text(f"🔍 Fetching details for @{username}...")
     try:
-        # We can fetch basic info even without full login sometimes, or use the session
         profile = instaloader.Profile.from_username(L.context, username)
-        info = (f"👤 *Profile:* @{username}\n"
-                f"📈 *Followers:* {profile.followers:,}\n"
-                f"👥 *Following:* {profile.followees:,}\n"
-                f"🖼️ *Posts:* {profile.mediacount}\n\n"
-                f"👉 *Confirm to start AI Policy Scan.*")
-        keyboard = [[InlineKeyboardButton("✅ Confirm & Scan", callback_data=f'scan_{username}')]]
-        await status_msg.edit_text(info, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-    except Exception as e:
-        await status_msg.edit_text(f"❌ *Error:* {str(e)}\nTry `/start` to login first.")
-
-async def attempt_login(update, context, user, pw):
-    global is_logged_in
-    status_msg = await update.message.reply_text("📡 *Logging in...*")
-    try:
-        L.login(user, pw)
-        is_logged_in, context.user_data['state'] = True, None
-        await status_msg.edit_text(f"✅ *Success!* Connected as `@{user}`.")
-    except instaloader.exceptions.CheckpointException:
-        keyboard = [[InlineKeyboardButton("🔄 Retry After Approval", callback_data='retry_login')]]
-        await status_msg.edit_text(
-            "⚠️ *Checkpoint Required!*\n\n"
-            "1. Open Instagram App on your phone.\n"
-            "2. Click **'This was me'** on the notification.\n"
-            "3. After clicking, press the button below.",
-            reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+        info_text = (
+            f"👤 *Profile:* @{username}\n"
+            f"📈 *Followers:* {profile.followers:,}\n"
+            f"👥 *Following:* {profile.followees:,}\n"
+            f"🖼️ *Total Posts:* {profile.mediacount}\n\n"
+            f"👉 *Confirm this account to start deep scanning.*"
         )
-    except instaloader.exceptions.TwoFactorAuthRequiredException:
-        context.user_data['state'] = WAITING_CODE
-        await status_msg.edit_text("🔐 *OTP Required:* Enter the 6-digit code.")
+        keyboard = [[InlineKeyboardButton("✅ Confirm & Scan Posts", callback_data=f'scan_{username}')]]
+        await status_msg.edit_text(info_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     except Exception as e:
-        await status_msg.edit_text(f"❌ *Failed:* {str(e)}")
-        context.user_data['state'] = None
+        await status_msg.edit_text(f"❌ *Error:* {str(e)}\n\n*Tip:* Use `/login` first.")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data == 'start_login':
-        context.user_data['state'] = WAITING_USER
-        await query.edit_message_text("👤 Enter Instagram **Username**.")
-    
-    elif query.data == 'retry_login':
-        user = context.user_data.get('insta_user')
-        pw = context.user_data.get('insta_pass')
-        if user and pw:
-            await attempt_login(query, context, user, pw)
-        else:
-            await query.edit_message_text("❌ Session lost. Use `/start` again.")
-
-    elif query.data.startswith('scan_'):
+    if query.data.startswith('scan_'):
         username = query.data.replace('scan_', '')
-        await query.edit_message_text(f"⚡ *Scanning @{username}...*", parse_mode="Markdown")
+        await query.edit_message_text(f"⚡ *Scanning posts for @{username}...*", parse_mode="Markdown")
         try:
             profile = instaloader.Profile.from_username(L.context, username)
             violations, max_chance = [], 0
@@ -132,31 +117,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     max_chance = max(max_chance, check["top_risks"][0]['chance'])
                     violations.extend(check["suggested_reports"])
                 time.sleep(1)
-            
-            context.user_data['v'], context.user_data['c'] = list(set(violations)), max_chance
-            res = (f"📊 *Results for @{username}*\n"
+
+            context.user_data['v'], context.user_data['c'] = list(set(violations)) if violations else ["Spam"], max_chance
+            res = (f"📊 *Scan Results for @{username}*\n"
                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                   f"🚫 Violations: {len(context.user_data['v'])}\n"
-                   f"💀 Risk: {max_chance}%\n\n"
-                   f"👉 Click below for the Takedown Prompt.")
-            keyboard = [[InlineKeyboardButton("🤖 Get Takedown Prompt", callback_data=f'prompt_{username}')]]
+                   f"🚫 Violations Found: {len(context.user_data['v'])}\n"
+                   f"💀 Highest Risk: {max_chance}%\n\n"
+                   f"👉 Click below to generate the Full Takedown Prompt.")
+            keyboard = [[InlineKeyboardButton("🤖 Generate Full Prompt", callback_data=f'prompt_{username}')]]
             await query.edit_message_text(res, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         except Exception as e:
-            await query.edit_message_text(f"❌ Scan Error: {str(e)}")
+            await query.edit_message_text(f"❌ *Scan Error:* {str(e)}")
 
     elif query.data.startswith('prompt_'):
         username = query.data.replace('prompt_', '')
-        v = ", ".join(context.user_data.get('v', ['Spam']))
-        c = context.user_data.get('c', 0)
+        v, c = ", ".join(context.user_data.get('v', ['Spam'])), context.user_data.get('c', 0)
         prompt = (f"💀 *ULTIMATE TAKEDOWN PROMPT*\n\n"
                   f"Paste in 'Something Else' box:\n\n"
-                  f"`[CRITICAL] Account @{username} violates safety protocols: {v}. Match: {c}%. Immediate termination required.`")
+                  f"`[CRITICAL] Account @{username} violating safety protocols: {v}. Match: {c}%. Immediate termination required.`")
         await query.message.reply_text(prompt, parse_mode="Markdown")
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('login', login_start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.run_polling()
-        
+                                                    
