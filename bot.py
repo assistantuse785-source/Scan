@@ -2,57 +2,85 @@ import os
 import re
 import logging
 import instaloader
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from moderator import check_content_policy
 
-# Logging
+# Logging setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 L = instaloader.Instaloader()
 is_logged_in = False
 
+# Login States
+WAITING_USER, WAITING_PASS, WAITING_CODE = 1, 2, 3
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status = "✅ Connected" if is_logged_in else "❌ Not Connected"
+    keyboard = [
+        [InlineKeyboardButton("🔐 Login to Instagram", callback_data='start_login')],
+        [InlineKeyboardButton("📊 Check Status", callback_data='check_status')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        "🚀 *MOBILE PRO: INSTAGRAM TRACKER* 🚀\n\n"
-        "To bypass security on mobile, we use the **Session ID** method.\n\n"
-        "🛠 *Commands:* \n"
-        "/setcookie - Get Mobile Setup Guide\n"
-        "/status - Check Connection\n"
-        "/start - Menu\n\n"
-        "👉 *After linking, just send any Username/Link to scan.*",
+        f"🔥 *ULTIMATE INSTAGRAM TRACKER (PRO)* 🔥\n\n"
+        f"📡 *Status:* {status}\n\n"
+        "I provide deep violation analysis and ban strategies.\n\n"
+        "👉 *Click below to login or send a link to scan!*",
+        reply_markup=reply_markup,
         parse_mode="Markdown"
     )
 
-async def set_cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📱 *How to get Session ID on Mobile:*\n\n"
-        "1. Install **Kiwi Browser** from Play Store.\n"
-        "2. Add **Cookie-Editor** extension in Kiwi.\n"
-        "3. Login to Instagram.com in Kiwi Browser.\n"
-        "4. Open Menu -> Cookie-Editor -> Find `sessionid`.\n"
-        "5. Copy the **Value** and send it here.\n\n"
-        "👉 *Send your Session ID value now:*",
-        parse_mode="Markdown"
-    )
-    context.user_data['state'] = 'WAITING_FOR_COOKIE'
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == 'start_login':
+        context.user_data['state'] = WAITING_USER
+        await query.edit_message_text("👤 *Step 1:* Please send your Instagram **Username**.")
+    
+    elif query.data == 'check_status':
+        status = "✅ Connected" if is_logged_in else "❌ Not Connected"
+        await query.edit_message_text(f"📡 *Current Status:* {status}\n\nUse `/start` to return to menu.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_logged_in
     state = context.user_data.get('state')
     text = update.message.text.strip()
 
-    if state == 'WAITING_FOR_COOKIE':
-        context.user_data['state'] = None
-        status_msg = await update.message.reply_text("📡 *Linking Mobile Session...*")
+    if state == WAITING_USER:
+        context.user_data['insta_user'] = text
+        context.user_data['state'] = WAITING_PASS
+        await update.message.reply_text(f"🔑 *Step 2:* Enter **Password** for `@{text}`.")
+        return
+
+    if state == WAITING_PASS:
+        insta_user = context.user_data['insta_user']
+        status_msg = await update.message.reply_text("📡 *Attempting login...*")
         try:
-            L.context._session.cookies.set("sessionid", text, domain=".instagram.com")
-            L.test_login() 
+            L.login(insta_user, text)
             is_logged_in = True
-            await status_msg.edit_text("✅ *Mobile Pro Linked!* \nYou can now scan accounts without any blocks.")
+            context.user_data['state'] = None
+            await status_msg.edit_text(f"✅ *Success!* Bot connected as `@{insta_user}`.")
+        except instaloader.exceptions.TwoFactorAuthRequiredException:
+            context.user_data['state'] = WAITING_CODE
+            await status_msg.edit_text("🔐 *2FA Required:* Instagram sent a code to your phone/email.\n\n👉 *Please enter the 6-digit code:*")
         except Exception as e:
-            await status_msg.edit_text(f"❌ *Failed:* {str(e)}\nMake sure you copied the correct sessionid.")
+            await status_msg.edit_text(f"❌ *Failed:* {str(e)}")
+            context.user_data['state'] = None
+        return
+
+    if state == WAITING_CODE:
+        status_msg = await update.message.reply_text("📡 *Verifying Code...*")
+        try:
+            L.two_factor_login(text)
+            is_logged_in = True
+            context.user_data['state'] = None
+            await status_msg.edit_text("✅ *OTP Verified!* Connection Established.")
+        except Exception as e:
+            await status_msg.edit_text(f"❌ *Code Failed:* {str(e)}")
         return
 
     # Scan Logic
@@ -61,8 +89,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         profile = instaloader.Profile.from_username(L.context, username)
-        violations = []
-        max_chance = 0
+        report = [f"👑 *DOSSIER:* @{username}", f"━━━━━━━━━━━━━━━━━━━━"]
+        violations, max_chance = [], 0
         for i, post in enumerate(profile.get_posts()):
             if i >= 10: break
             check = check_content_policy(post.caption)
@@ -70,28 +98,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 max_chance = max(max_chance, check["top_risks"][0]['chance'])
                 violations.extend(check["suggested_reports"])
 
-        violations = list(set(violations)) if violations else ["Spam / Community Standards"]
-
-        report = [
-            f"👑 *TAKEDOWN REPORT:* @{username}",
-            f"━━━━━━━━━━━━━━━━━━━━",
-            f"📊 AI Risk: {max_chance}%",
-            f"\n📱 *METHOD 1: MASS REPORT*",
-            f"• Category: {violations[0]}",
-            f"• Action: Report 20x from 5 accounts.",
-            f"\n🌐 *METHOD 2: CHROME BYPASS*",
-            f"1. Use Kiwi Browser Incognito.\n2. Go to `instagram.com/{username}`\n3. Report -> Something else.",
-            f"\n🤖 *METHOD 3: ULTIMATE AI PROMPT*",
-            f"`[CRITICAL] Account @{username} matches prohibited patterns for {', '.join(violations)}. Termination required.`"
-        ]
+        violations = list(set(violations)) if violations else ["Spam / Guidelines"]
+        report.append(f"📊 AI Risk Score: {max_chance}%")
+        report.append(f"\n📱 *METHOD 1: MASS REPORT*\n• Category: {violations[0]}")
+        report.append(f"\n🤖 *METHOD 2: AI TAKEDOWN PROMPT*\n`[CRITICAL] Account @{username} violating safety protocols: {', '.join(violations)}. Match: {max_chance}%. Termination required.`")
+        
         await scan_msg.edit_text("\n".join(report), parse_mode="Markdown", disable_web_page_preview=True)
     except Exception as e:
-        await scan_msg.edit_text(f"❌ *Scan Failed:* {str(e)}\n\n*Tip:* `/setcookie` se naya session link karein.")
+        await scan_msg.edit_text(f"❌ *Scan Failed:* {str(e)}\n\n*Tip:* Use `/start` to login first.")
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('setcookie', set_cookie))
+    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.run_polling()
     
