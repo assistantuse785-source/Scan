@@ -3,7 +3,6 @@ import re
 import logging
 import instaloader
 import time
-import pickle
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from moderator import check_content_policy
@@ -12,29 +11,40 @@ from moderator import check_content_policy
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-SESSION_FILE = "insta_session.pkl"
+SESSION_DIR = "sessions"
+if not os.path.exists(SESSION_DIR):
+    os.makedirs(SESSION_DIR)
+
 L = instaloader.Instaloader(user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6 Mobile/15E148 Safari/604.1")
 is_logged_in = False
 
-# --- SESSION HANDLING ---
-def save_session():
-    with open(SESSION_FILE, 'wb') as f:
-        pickle.dump(L.context.get_json_auth(), f)
+# --- SESSION HANDLING (FIXED) ---
+def get_session_path(username):
+    return os.path.join(SESSION_DIR, f"session_{username}")
+
+def save_session(username):
+    L.save_session_to_file(get_session_path(username))
+    with open("last_user.txt", "w") as f:
+        f.write(username)
 
 def load_session():
     global is_logged_in
-    if os.path.exists(SESSION_FILE):
+    if os.path.exists("last_user.txt"):
         try:
-            with open(SESSION_FILE, 'rb') as f:
-                L.context.set_json_auth(pickle.load(f))
-            L.test_login()
-            is_logged_in = True
-            return True
-        except:
+            with open("last_user.txt", "r") as f:
+                username = f.read().strip()
+            session_path = get_session_path(username)
+            if os.path.exists(session_path):
+                L.load_session_from_file(username, session_path)
+                L.test_login()
+                is_logged_in = True
+                return True
+        except Exception as e:
+            logging.error(f"Session load failed: {e}")
             is_logged_in = False
     return False
 
-# Try to load session on startup
+# Load session on startup
 load_session()
 
 # States
@@ -48,7 +58,6 @@ def extract_username(text):
     return text.replace("@", "")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Refresh session status
     load_session()
     status = "✅ Connected (Session Saved)" if is_logged_in else "❌ Not Connected"
     await update.message.reply_text(
@@ -70,7 +79,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get('state')
     text = update.message.text.strip()
 
-    # --- LOGIN LOGIC ---
     if state == WAITING_USER:
         context.user_data['insta_user'] = text
         context.user_data['state'] = WAITING_PASS
@@ -79,10 +87,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == WAITING_PASS:
         insta_user = context.user_data['insta_user']
-        status_msg = await update.message.reply_text("📡 *Logging in and saving session...*")
+        status_msg = await update.message.reply_text("📡 *Logging in...*")
         try:
             L.login(insta_user, text)
-            save_session()
+            save_session(insta_user)
             is_logged_in = True
             context.user_data['state'] = None
             await status_msg.edit_text(f"✅ *Success!* Session saved. You won't need to login again.")
@@ -95,9 +103,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == WAITING_CODE:
+        insta_user = context.user_data['insta_user']
         try:
             L.two_factor_login(text)
-            save_session()
+            save_session(insta_user)
             is_logged_in, context.user_data['state'] = True, None
             await update.message.reply_text("✅ *OTP Verified & Session Saved!*")
         except Exception as e:
@@ -107,8 +116,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- SCAN LOGIC ---
     username = extract_username(text)
     if not username: return
-    
-    # Auto-load session if not logged in
     if not is_logged_in: load_session()
     
     status_msg = await update.message.reply_text(f"🔍 Fetching details for @{username}...")
@@ -131,7 +138,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data.startswith('scan_'):
         username = query.data.replace('scan_', '')
-        await query.edit_message_text(f"⚡ *Deep Scanning @{username}...*", parse_mode="Markdown")
+        await query.edit_message_text(f"⚡ *Scanning @{username}...*", parse_mode="Markdown")
         try:
             profile = instaloader.Profile.from_username(L.context, username)
             violations, max_chance = [], 0
@@ -144,7 +151,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 time.sleep(1)
 
             context.user_data['v'], context.user_data['c'] = list(set(violations)) if violations else ["Spam"], max_chance
-            res = (f"📊 *Scan Results for @{username}*\n"
+            res = (f"📊 *Results for @{username}*\n"
                    f"━━━━━━━━━━━━━━━━━━━━\n"
                    f"🚫 Violations: {len(context.user_data['v'])}\n"
                    f"💀 Risk: {max_chance}%\n\n"
@@ -168,4 +175,4 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.run_polling()
-            
+        
