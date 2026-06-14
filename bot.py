@@ -1,88 +1,93 @@
 import os
+import re
 import logging
 import instaloader
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from moderator import check_content_policy
 
-# Set up logging
+# Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 L = instaloader.Instaloader()
 
+def extract_username(text):
+    """Extracts username from Instagram URL or plain text."""
+    url_pattern = r"(?:https?://)?(?:www\.)?instagram\.com/([^/?#&]+)"
+    match = re.search(url_pattern, text)
+    if match:
+        return match.group(1)
+    return text.strip().replace("@", "")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✨ *Welcome to Instagram Tracker Bot* ✨\n\n"
-        "I can scan any public Instagram account for policy violations.\n\n"
-        "👉 *How to use:* Just send me the Instagram username (e.g., `cristiano`)",
+        "🚀 *Instagram Policy Tracker Bot* 🚀\n\n"
+        "I scan accounts for illegal content and suspension risks.\n\n"
+        "✅ *Supported:* Profile URLs or Usernames\n"
+        "📊 *Results:* Top 3 Risks, Violation Chances, and Reporting Guides.\n\n"
+        "👉 *Send a link or username now!*",
         parse_mode="Markdown"
     )
 
 async def scan_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    username = update.message.text.strip().replace("@", "")
-    status_msg = await update.message.reply_text(f"🔍 *Scanning @{username}...*\nFetching profile and posts. Please wait.", parse_mode="Markdown")
+    input_text = update.message.text
+    username = extract_username(input_text)
+    
+    status_msg = await update.message.reply_text(f"📡 *Fetching @{username}...*\nAnalyzing profile and posts for high-risk violations.", parse_mode="Markdown")
 
     try:
-        # Load profile
         profile = instaloader.Profile.from_username(L.context, username)
         
         if profile.is_private:
-            await status_msg.edit_text(f"❌ *Error:* The account `@{username}` is **Private**.\nI can only scan Public accounts.")
+            await status_msg.edit_text(f"🔒 *Error:* Account `@{username}` is **Private**.\nScanning is only possible for Public accounts.")
             return
 
         report = [
-            f"📊 *Scan Report for @{username}*",
-            f"━━━━━━━━━━━━━━━━━━━━",
-            f"👤 *Followers:* {profile.followers:,}",
-            f"👥 *Following:* {profile.followees:,}",
-            f"📝 *Total Posts:* {profile.mediacount}",
-            f"📖 *Bio:* {profile.biography if profile.biography else 'None'}\n",
-            f"🔍 *Policy Check Results:*",
+            f"👤 *Profile:* @{username}",
+            f"📈 *Followers:* {profile.followers:,}",
+            f"🖼️ *Total Posts:* {profile.mediacount}\n",
+            f"🔥 *High-Risk Violation Analysis:*",
+            f"━━━━━━━━━━━━━━━━━━━━"
         ]
         
         violations_found = 0
-        flagged_details = []
-
-        # Scan posts (limiting to latest 50 for stability, can be changed)
+        all_suggested_reports = set()
+        
         posts = profile.get_posts()
-        count = 0
-        for post in posts:
-            count += 1
-            if count > 50: break # Safety limit to prevent long hangs
+        for i, post in enumerate(posts):
+            if i >= 20: break # Scan latest 20 posts for performance
             
             check = check_content_policy(post.caption)
             if not check["is_safe"]:
                 violations_found += 1
-                flagged_details.append(f"🚫 *Post {count}:* {', '.join(check['violations']).title()}")
-                flagged_details.append(f"🔗 [View Post](https://instagram.com/p/{post.shortcode})")
+                report.append(f"\n🚫 *Post {i+1} Violation:*")
+                for risk in check["top_risks"]:
+                    report.append(f"  ⚡ {risk['category']}: {risk['chance']}%")
+                
+                report.append(f"🔗 [Post Link](https://instagram.com/p/{post.shortcode})")
                 if check["suggested_reports"]:
-                    flagged_details.append(f"📢 *Suggested Report:* {', '.join(set(check['suggested_reports']))}\n")
+                    all_suggested_reports.update(check["suggested_reports"])
 
         if violations_found == 0:
-            report.append("✅ *Clean:* No major violations found in recent posts.")
+            report.append("\n✅ *Account looks safe.* No major policy violations detected.")
         else:
-            report.extend(flagged_details)
-            report.append(f"⚠️ *Warning:* Found {violations_found} potential violations.")
-            report.append("🚨 *Status:* This account is at **High Risk** of suspension.")
+            report.append(f"\n🚨 *Summary:* {violations_found} high-risk posts found.")
+            report.append(f"🛠️ *Best Reporting Categories:*")
+            for r in all_suggested_reports:
+                report.append(f"  ✅ {r}")
+            report.append("\n⚠️ *Verdict:* High probability of suspension if reported correctly.")
 
         await status_msg.edit_text("\n".join(report), parse_mode="Markdown", disable_web_page_preview=True)
 
     except instaloader.exceptions.ProfileNotExistsException:
-        await status_msg.edit_text(f"❌ *Error:* Profile `@{username}` does not exist.")
-    except instaloader.exceptions.QueryReturnedBadRequestException:
-        await status_msg.edit_text("❌ *Error:* Instagram blocked the request. Try again later.")
+        await status_msg.edit_text(f"❌ *Error:* Profile `@{username}` not found.")
     except Exception as e:
-        logging.error(f"Error: {e}")
-        await status_msg.edit_text(f"❌ *Error:* Something went wrong. Make sure the account is public.")
+        await status_msg.edit_text(f"❌ *Error:* Unable to fetch data. Try again later.")
 
 if __name__ == '__main__':
-    if not TELEGRAM_TOKEN:
-        print("Error: TELEGRAM_TOKEN not found!")
-    else:
-        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-        app.add_handler(CommandHandler('start', start))
-        app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), scan_account))
-        print("Bot is running...")
-        app.run_polling()
-        
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), scan_account))
+    app.run_polling()
+            
