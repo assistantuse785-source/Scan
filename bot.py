@@ -1,89 +1,86 @@
-import os
-import asyncio
-import logging
-import time
-import gc
-import instaloader
+import os, time, asyncio, gc, instaloader
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from moderator import check_content_policy
 
-# Logging & Config
-logging.basicConfig(level=logging.INFO)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-SESSION_DIR = "sessions"
-os.makedirs(SESSION_DIR, exist_ok=True)
+L = instaloader.Instaloader(save_metadata=False, compress_json=False, sleep=True)
 
-# Optimized Instaloader (Memory-Safe)
-L = instaloader.Instaloader(
-    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    save_metadata=False, compress_json=False, sleep=True
-)
+# --- COOL-DOWN ANIMATION UTILITY ---
+async def show_cooldown(msg, action_name):
+    for i in range(3, 0, -1):
+        await msg.edit_text(f"⏳ {action_name} in {i} seconds...")
+        await asyncio.sleep(1)
 
-def get_session_path(u): return os.path.join(SESSION_DIR, f"{u}.session")
-
-# --- CORE SCAN ENGINE ---
+# --- CORE SCAN ---
 async def start_deep_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    # Cooldown step
+    await show_cooldown(query.message, "Starting Deep Analysis")
+    
     username = context.user_data.get('username')
-    
-    # 1. Estimate Time (2.5s per post for safety)
     profile = instaloader.Profile.from_username(L.context, username)
-    total_posts = profile.mediacount
-    est_sec = total_posts * 2.5
-    msg = await query.edit_message_text(f"⏳ *Estimating:* {int(est_sec//60)}m {int(est_sec%60)}s for {total_posts} posts.\n🚀 Scanning started...")
     
-    start_time = time.time()
+    msg = await query.edit_text("🚀 Scanning initialized...")
     violations, count = [], 0
     
-    # 2. Scanning Loop
     for post in profile.get_posts():
         count += 1
         res = check_content_policy(post.caption or "")
         if not res.get("is_safe", True):
             violations.extend(res.get("suggested_reports", []))
         
-        if count % 5 == 0:
-            elapsed = time.time() - start_time
-            rem = max(0, est_sec - elapsed)
-            await msg.edit_text(f"🚀 *Scanning @{username}*\n📊 {count}/{total_posts} posts done\n⏳ Left: {int(rem//60)}m {int(rem%60)}s")
-            await asyncio.sleep(2.5)
-            gc.collect() # RAM Clear
+        if count % 10 == 0:
+            await msg.edit_text(f"📡 Processing: {count} posts scanned...")
+            await asyncio.sleep(1.5)
+            gc.collect()
 
-    # 3. Final Report
     context.user_data['risks'] = list(set(violations))
-    res = f"✅ *Scan Complete!*\n📦 {count} posts checked in {int((time.time()-start_time)//60)}m.\n⚠️ Risks Found: {len(context.user_data['risks'])}"
-    kb = [[InlineKeyboardButton("💀 Make Prompt", callback_data='prompt'),
-           InlineKeyboardButton("💡 View Method", callback_data='method')]]
+    res = f"✅ *Analysis Complete*\n📦 Total: {count}\n⚠️ Risks Found: {len(context.user_data['risks'])}"
+    kb = [[InlineKeyboardButton("💀 Generate Takedown Prompt", callback_data='prompt')]]
     await msg.edit_text(res, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
-# --- HANDLERS ---
+# --- PROMPT HANDLER ---
+async def generate_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await show_cooldown(query.message, "Generating Google-style Report")
+    
+    risks = ", ".join(context.user_data.get('risks', ['Inappropriate Content']))
+    user = context.user_data.get('username')
+    
+    prompt = (f"🌐 *OFFICIAL TAKEDOWN REQUEST*\n\n"
+              f"To Meta Safety Team,\n\n"
+              f"I am writing to report the account @{user} for multiple violations of community guidelines.\n"
+              f"The identified risks include: {risks}.\n\n"
+              f"Please perform a manual review and initiate account termination to protect users.\n\n"
+              f"Regards,\nSafety Monitor Bot.")
+    
+    await query.edit_message_text(prompt, parse_mode="Markdown")
+
+# --- HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    username = update.message.text.replace("@", "").split('/')[0].strip()
+    text = update.message.text
+    # Extract username from URL or text
+    username = text.split('/')[-2] if "instagram.com" in text else text.replace("@", "")
     context.user_data['username'] = username
+    
     try:
         profile = instaloader.Profile.from_username(L.context, username)
-        info = f"👤 *@{username}*\n📈 Followers: {profile.followers}\n🖼️ Posts: {profile.mediacount}"
-        kb = [[InlineKeyboardButton("🛡️ Start Full Deep Scan", callback_data='start_scan')]]
+        info = (f"👤 *Profile Identified:* @{username}\n"
+                f"📈 Followers: {profile.followers} | Posts: {profile.mediacount}\n"
+                f"🔗 Status: {'Private' if profile.is_private else 'Public'}")
+        kb = [[InlineKeyboardButton("🛡️ Initiate Full Scan", callback_data='start_scan')]]
         await update.message.reply_text(info, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data == 'start_scan': await start_deep_scan(update, context)
-    elif query.data == 'prompt':
-        risks = ", ".join(context.user_data.get('risks', ['Spam']))
-        await query.message.reply_text(f"💀 *Takedown Prompt*\n\n`Account @{context.user_data['username']} violates safety: {risks}. Terminate.`", parse_mode="Markdown")
-    elif query.data == 'method':
-        await query.message.reply_text("💡 *Method:* Report post-by-post using the prompt provided.")
-
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler('start', lambda u, c: u.message.reply_text("Send username to scan.")))
-    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(CallbackQueryHandler(start_deep_scan, pattern='start_scan'))
+    app.add_handler(CallbackQueryHandler(generate_prompt, pattern='prompt'))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.run_polling()
     
